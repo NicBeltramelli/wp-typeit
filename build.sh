@@ -28,6 +28,10 @@ FILES_TO_DELETE=(
     ".prettierignore"
     ".eslintrc.js"
     ".eslintignore"
+    ".eslintcache"
+    ".husky"
+    "empty.ts"
+    "tsconfig.json"
 )
 
 for item in "${FILES_TO_DELETE[@]}"
@@ -36,5 +40,10 @@ do
     echo "Deleting $path_to_delete"
     rm -rf $path_to_delete
 done
+
+cd ../
+echo "Zipping..."
+zip -r "$1.zip" wp-typeit-build
+cd wp-typeit
 
 echo "Done!"

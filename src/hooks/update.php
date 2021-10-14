@@ -2,13 +2,14 @@
 
 namespace TypeIt;
 
+define("TYPEIT_TRANSIENT_EXPIRATION", 43200); // 12 hours
+define("TYPEIT_UPDATE_CHECK_TRANSIENT", "wp_update_check_wp_typeit");
+define("TYPEIT_UPDATE_ENDPOINT", "https://wp-plugin-update.vercel.app/api/wp-typeit");
+
 add_filter('site_transient_update_plugins', '\TypeIt\push_update');
 add_filter('transient_update_plugins', '\TypeIt\push_update');
 add_filter('plugin_row_meta', '\TypeIt\remove_view_details_link', 10, 4);
 add_filter('self_admin_url', '\TypeIt\modify_version_details_url', 10, 3);
-
-define("TYPEIT_TRANSIENT_EXPIRATION", 43200); // 12 hours
-define("TYPEIT_UPDATE_CHECK_TRANSIENT", "wp_update_check_wp_typeit");
 
 function modify_version_details_url($url, $path, $scheme)
 {
@@ -19,39 +20,24 @@ function modify_version_details_url($url, $path, $scheme)
     return $url;
 }
 
-function remove_view_details_link($pluginMeta, $pluginFile, $pluginData, $status)
+function remove_view_details_link($pluginMeta, $pluginFile, $remoteData, $status)
 {
-    if ($pluginData['slug'] === 'wp-typeit') {
+    if ($remoteData['slug'] === 'wp-typeit') {
         unset($pluginMeta[2]);
     }
 
     return $pluginMeta;
 }
 
-function push_update($updatePlugins)
+/**
+ * Retrieve the latest plugin version information from endpoint.
+ *
+ * @return object
+ */
+function fetch_remote_data()
 {
-    global $pagenow;
-
-    if ($pagenow !== 'plugins.php') {
-        return $updatePlugins;
-    }
-
-    if (!is_object($updatePlugins)) {
-        return $updatePlugins;
-    }
-
-    if (!isset($update_plugins->response) || !is_array($update_plugins->response)) {
-        $updatePlugins->response = [];
-    }
-
-    if ($transient = get_transient(TYPEIT_UPDATE_CHECK_TRANSIENT)) {
-        $updatePlugins->response['wp-typeit/typeit.php'] = $transient;
-
-        return $updatePlugins;
-    }
-
-    $pluginData = wp_remote_get(
-        'https://wp-plugin-update.now.sh/api/plugin/wp-typeit',
+    $remoteData = wp_remote_get(
+        TYPEIT_UPDATE_ENDPOINT,
         [
             'headers' => [
                 'Accept' => 'application/json'
@@ -59,34 +45,59 @@ function push_update($updatePlugins)
         ]
     );
 
+    // Something went wrong!
     if (
-        is_wp_error($pluginData) ||
-        ($pluginData['response']['code'] ?? null) !== 200 ||
-        empty($pluginData['body'])
+        is_wp_error($remoteData) ||
+        wp_remote_retrieve_response_code($remoteData) !== 200
     ) {
-        return $updatePlugins;
+        return null;
     }
 
-    $pluginData = json_decode($pluginData['body']);
-    $responseObject = (object) [
-        'slug'         => 'wp-typeit',
-        'new_version'  => $pluginData->version,
-        'url'          => 'https://typeitjs.com',
-        'package'      => $pluginData->package
+    $remoteData = json_decode($remoteData['body']);
+
+    // Should resemble object described here:
+    // https://make.wordpress.org/core/2020/07/30/recommended-usage-of-the-updates-api-to-support-the-auto-updates-ui-for-plugins-and-themes-in-wordpress-5-5/
+    return (object) [
+        'id'            => 'wp-typeit/typeit.php',
+        'slug'          => 'wp-typeit',
+        'plugin'        => 'wp-typeit/typeit.php',
+        'new_version'   => $remoteData->version,
+        'url'           => 'https://typeitjs.com',
+        'package'       => $remoteData->package,
+        'icons'         => [],
+        'banners'       => [],
+        'banners_rtl'   => [],
+        'tested'        => '',
+        'requires_php'  => '7.2',
+        'compatibility' => new \stdClass(),
     ];
+}
 
-    set_transient(
-        TYPEIT_UPDATE_CHECK_TRANSIENT,
-        $responseObject,
-        TYPEIT_TRANSIENT_EXPIRATION
-    );
+function push_update($updatePluginsTransient)
+{
+    $checkPluginTransient = get_transient(TYPEIT_UPDATE_CHECK_TRANSIENT);
 
-    // Don't show `update` notice unless the remote version is newer. 
-    if (version_compare($pluginData->version, WP_TYPEIT_PLUGIN_VERSION, "<=")) {
-        return $updatePlugins;
+    $pluginData = $checkPluginTransient ?: fetch_remote_data();
+
+    if (!$pluginData) {
+        return $updatePluginsTransient;
     }
 
-    $updatePlugins->response['wp-typeit/typeit.php'] = $responseObject;
+    if (!$checkPluginTransient) {
+        set_transient(
+            TYPEIT_UPDATE_CHECK_TRANSIENT,
+            $pluginData,
+            TYPEIT_TRANSIENT_EXPIRATION
+        );
+    }
 
-    return $updatePlugins;
+    if (version_compare($pluginData->new_version, WP_TYPEIT_PLUGIN_VERSION, ">")) {
+        $updatePluginsTransient->response['wp-typeit/typeit.php'] = $pluginData;
+        unset($updatePluginsTransient->no_update['wp-typeit/typeit.php']);
+    } else {
+        $updatePluginsTransient->no_update['wp-typeit/typeit.php'] = $pluginData;
+        unset($updatePluginsTransient->response['wp-typeit/typeit.php']);
+    }
+
+    return $updatePluginsTransient;
 }
